@@ -38,7 +38,7 @@ Resolution order (highest priority first):
 |--------------|-----------|----------|-------------|
 | `-g, --grid-manager` | `NIOS_GRID_MANAGER` | yes | IP or FQDN of the Grid Manager (bare host or `https://host` both accepted). |
 | `-u, --username` | `NIOS_USERNAME` | yes | WAPI (NIOS admin) username. |
-| `-o, --output` | `NIOS_OUTPUT` | yes | Path where the CSV is written (directory must exist and be writable). |
+| `-o, --output` | `NIOS_OUTPUT` | yes | Base path for the CSV output (directory must exist and be writable). The script adds a timestamped suffix so each run creates a unique file name. |
 | `-p, --password` | `NIOS_PASSWORD` | no* | WAPI password. *Not required anywhere — if absent, you are prompted securely. |
 | `--wapi-version` | `NIOS_WAPI_VERSION` | no | WAPI version in the URL (default `v2.14`). |
 | `--page-size` | `NIOS_PAGE_SIZE` | no | Members per page when enumerating (default `1000`). |
@@ -106,7 +106,7 @@ Lab grid with a self-signed certificate:
 (On Windows, run with `py nios_grid_capacity.py ...`.)
 
 ## Outputs
-A CSV file at `--output` with **one row per Grid member**. Columns, in order:
+The script writes a CSV file at a timestamped path derived from `--output` so each run produces a unique file name, for example `grid_capacity.csv` becomes `grid_capacity_20260716_153000_123456.csv`. The file still contains **one row per Grid member**. Columns, in order:
 
 1. **Member info** — `host_name`, `member_ref`, management-port settings, DNS
    resolvers/search domains, syslog server count/addresses, additional IP count,

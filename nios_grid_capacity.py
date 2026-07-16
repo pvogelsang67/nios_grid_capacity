@@ -98,6 +98,7 @@ import sys                 # for clean, non-zero exits on error
 import urllib.error        # to catch HTTP/URL errors cleanly
 import urllib.parse        # to safely build query strings
 import urllib.request      # to perform the HTTPS GET requests
+from datetime import datetime
 from pathlib import Path   # for robust, cross-platform path handling
 
 
@@ -823,6 +824,32 @@ def flatten_capacity(capacity):
 # =============================================================================
 # --- CSV writing ---
 # =============================================================================
+def build_unique_output_path(output_path):
+    """Return a unique output path by adding a timestamped suffix.
+
+    The base file name is preserved, a timestamp is inserted before the
+    extension, and an incrementing counter is appended if the file already
+    exists to guarantee uniqueness.
+    """
+    path = Path(output_path)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+    if path.suffix:
+        stem = path.stem
+        suffix = path.suffix
+    else:
+        stem = path.name
+        suffix = ""
+
+    candidate = path.with_name(f"{stem}_{timestamp}{suffix}")
+    counter = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{stem}_{timestamp}_{counter}{suffix}")
+        counter += 1
+
+    return candidate
+
+
 def write_csv(output_path, rows, member_info_keys, summary_keys, object_count_keys):
     """Write the collected rows to a CSV file with a stable column order.
 
@@ -970,6 +997,9 @@ def main():
     ]
 
     # --- Step 3: write everything out to CSV ---
+    output_path = build_unique_output_path(config["output"])
+    config["output"] = str(output_path)
+
     try:
         write_csv(config["output"], rows, member_info_key_order, summary_keys, object_count_keys)
     except OSError as err:
