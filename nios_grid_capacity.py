@@ -118,6 +118,7 @@ ENV_KEYS = {
     "NIOS_TIMEOUT": "timeout",
     "NIOS_CA_CERT": "ca_cert",
     "NIOS_INSECURE": "insecure",
+    "NIOS_VERBOSE_OUTPUT": "verbose_output",
 }
 
 # Built-in defaults applied only when a setting is given neither on the command
@@ -128,6 +129,7 @@ DEFAULTS = {
     "timeout": 60.0,
     "insecure": False,
     "ca_cert": None,
+    "verbose_output": False,
 }
 
 
@@ -164,7 +166,7 @@ def parse_args(argv=None):
             ".env file keys (KEY=value, one per line):\n"
             "  NIOS_GRID_MANAGER, NIOS_USERNAME, NIOS_PASSWORD, NIOS_OUTPUT,\n"
             "  NIOS_WAPI_VERSION, NIOS_PAGE_SIZE, NIOS_TIMEOUT, NIOS_CA_CERT,\n"
-            "  NIOS_INSECURE\n\n"
+            "  NIOS_INSECURE, NIOS_VERBOSE_OUTPUT\n\n"
             "Examples:\n"
             "  # All inputs on the command line, prompt for the password:\n"
             "  ./nios_grid_capacity.py --grid-manager 192.168.2.20 \\\n"
@@ -272,6 +274,14 @@ def parse_args(argv=None):
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose (DEBUG) logging for troubleshooting.",
+    )
+    parser.add_argument(
+        "--verbose-output",
+        action="store_true",
+        help=(
+            "Include the verbose-only CSV columns in the output and write both "
+            "the original and renamed header rows. (.env: NIOS_VERBOSE_OUTPUT=true)"
+        ),
     )
 
     return parser.parse_args(argv)
@@ -432,6 +442,13 @@ def resolve_config(args, env):
         config["insecure"] = _coerce_bool(env["NIOS_INSECURE"])
     else:
         config["insecure"] = DEFAULTS["insecure"]
+
+    if args.verbose_output:
+        config["verbose_output"] = True
+    elif "NIOS_VERBOSE_OUTPUT" in env:
+        config["verbose_output"] = _coerce_bool(env["NIOS_VERBOSE_OUTPUT"])
+    else:
+        config["verbose_output"] = DEFAULTS["verbose_output"]
 
     # --- Validate required values are present from some source ---
     missing = [
@@ -774,6 +791,61 @@ def flatten_member_info(member):
     return row
 
 
+def estimate_uddi_objects(object_counts):
+    """Estimate how many DDI and Active IP objects a member would use.
+
+    The estimate is based on an explicit mapping of capacity object types to one
+    of two buckets: DDI Object or Active IP. The function returns three values:
+    the DDI-object total, the Active IP total, and the combined UDDI total.
+    """
+    ddi_types = {
+        "A Record/Substitute (A Record) Rule/Substitute (IPv4 Address) Rule",
+        "Access Control Item",
+        "CNAME Record/Substitute Domain Name/Block/Passthru Rule",
+        "DHCP Custom Option",
+        "DHCP Range",
+        "DNS Traffic Control HTTP Monitor",
+        "DNS Traffic Control ICMP Monitor",
+        "DNS Traffic Control PDP Monitor",
+        "DNS Traffic Control SIP Monitor",
+        "DNS Traffic Control SNMP Monitor",
+        "Host Alias",
+        "Network",
+        "Network Container",
+        "PTR Record/Substitute (PTR Record) Rule",
+        "Router",
+        "SVCB Record/Substitute (SVCB Record) Rule",
+        "TXT Record/Substitute (TXT Record) Rule",
+        "View",
+        "Zone",
+        "Zone SOA",
+    }
+    active_ip_types = {
+        "Fixed Address",
+        "Host",
+        "Host Address",
+    }
+
+    ddi_total = 0
+    active_ip_total = 0
+    for entry in object_counts or []:
+        if not isinstance(entry, dict):
+            continue
+        type_name = entry.get("type_name", "")
+        if type_name in ddi_types:
+            try:
+                ddi_total += int(entry.get("count", 0))
+            except (TypeError, ValueError):
+                continue
+        elif type_name in active_ip_types:
+            try:
+                active_ip_total += int(entry.get("count", 0))
+            except (TypeError, ValueError):
+                continue
+
+    return ddi_total, active_ip_total, ddi_total + active_ip_total
+
+
 def flatten_capacity(capacity):
     """Flatten a capacity report into summary columns plus per-object counts.
 
@@ -792,6 +864,9 @@ def flatten_capacity(capacity):
         "cap_max_capacity": "",
         "cap_total_objects": "",
         "cap_percent_used": "",
+        "cap_uddi_ddi_objects": "",
+        "cap_uddi_active_ip_objects": "",
+        "cap_uddi_total_objects": "",
         "cap_report_found": False,
     }
     object_counts = {}
@@ -817,6 +892,13 @@ def flatten_capacity(capacity):
         if type_name == "":
             continue
         object_counts[f"obj_{type_name}"] = entry.get("count", "")
+
+    ddi_total, active_ip_total, combined_total = estimate_uddi_objects(
+        capacity.get("object_counts", []) or []
+    )
+    summary["cap_uddi_ddi_objects"] = ddi_total
+    summary["cap_uddi_active_ip_objects"] = active_ip_total
+    summary["cap_uddi_total_objects"] = combined_total
 
     return summary, object_counts
 
@@ -850,31 +932,73 @@ def build_unique_output_path(output_path):
     return candidate
 
 
-def write_csv(output_path, rows, member_info_keys, summary_keys, object_count_keys):
-    """Write the collected rows to a CSV file with a stable column order.
+def load_header_layout(layout_path=None):
+    """Load the original/new header mapping and verbose flags from newheadings.csv."""
+    path = Path(layout_path or Path(__file__).with_name("newheadings.csv"))
+    if not path.is_file():
+        return {}
 
-    Column order:
-        1. Member-info columns (human-friendly order).
-        2. Capacity summary columns.
-        3. Every ``obj_<type>`` column (union across all members), sorted
-           alphabetically for a deterministic layout run-to-run.
+    try:
+        with open(path, "r", newline="", encoding="utf-8") as handle:
+            rows = list(csv.reader(handle))
+    except OSError as err:
+        LOG.debug("Could not read header layout file %s: %s", path, err)
+        return {}
 
-    Args:
-        output_path (str): destination CSV path.
-        rows (list[dict]): one flattened dict per member.
-        member_info_keys (list[str]): ordered member-info column names.
-        summary_keys (list[str]): ordered capacity summary column names.
-        object_count_keys (set[str]): all ``obj_*`` column names seen.
+    if len(rows) < 3:
+        return {}
+
+    original_names = [cell.strip() for cell in rows[0][1:]]
+    verbose_flags = [cell.strip() for cell in rows[1][1:]]
+    renamed_names = [cell.strip() for cell in rows[2][1:]]
+
+    layout = {}
+    for original_name, verbose_flag, new_name in zip(original_names, verbose_flags, renamed_names):
+        if not original_name:
+            continue
+        layout[original_name] = {
+            "new_name": new_name or original_name,
+            "verbose": verbose_flag == "VERBOSE",
+        }
+    return layout
+
+
+def select_output_columns(columns, verbose_output, layout_path=None):
+    """Return the columns and their display headers for the CSV export."""
+    layout = load_header_layout(layout_path)
+    selected_columns = []
+    selected_headers = []
+
+    for column in columns:
+        definition = layout.get(column)
+        if definition and definition["verbose"] and not verbose_output:
+            continue
+        selected_columns.append(column)
+        selected_headers.append(definition["new_name"] if definition else column)
+
+    return selected_columns, selected_headers
+
+
+def write_csv(output_path, rows, member_info_keys, summary_keys, object_count_keys, verbose_output=False):
+    """Write the collected rows to a CSV file with original/new header rows.
+
+    The output includes two header rows: the first row uses the script's original
+    field names, and the second row uses the new display names from
+    newheadings.csv. Verbose-only columns are omitted unless the user requested
+    verbose output.
     """
     ordered_object_keys = sorted(object_count_keys)
     fieldnames = list(member_info_keys) + list(summary_keys) + ordered_object_keys
+    selected_columns, selected_headers = select_output_columns(
+        fieldnames, verbose_output
+    )
 
     # newline="" is required by the csv module to avoid blank lines on Windows.
     with open(output_path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
+        writer = csv.writer(handle)
+        writer.writerow(selected_headers)
         for row in rows:
-            writer.writerow({key: row.get(key, "") for key in fieldnames})
+            writer.writerow([row.get(key, "") for key in selected_columns])
 
 
 # =============================================================================
@@ -994,6 +1118,9 @@ def main():
         "cap_max_capacity",
         "cap_total_objects",
         "cap_percent_used",
+        "cap_uddi_ddi_objects",
+        "cap_uddi_active_ip_objects",
+        "cap_uddi_total_objects",
     ]
 
     # --- Step 3: write everything out to CSV ---
@@ -1001,7 +1128,14 @@ def main():
     config["output"] = str(output_path)
 
     try:
-        write_csv(config["output"], rows, member_info_key_order, summary_keys, object_count_keys)
+        write_csv(
+            config["output"],
+            rows,
+            member_info_key_order,
+            summary_keys,
+            object_count_keys,
+            verbose_output=config["verbose_output"],
+        )
     except OSError as err:
         sys.exit(f"Error writing CSV to {config['output']}: {err}")
 

@@ -45,6 +45,7 @@ Resolution order (highest priority first):
 | `--timeout` | `NIOS_TIMEOUT` | no | Per-request timeout in seconds (default `60`). |
 | `--ca-cert` | `NIOS_CA_CERT` | no | PEM CA bundle to verify the Grid Manager's TLS certificate. |
 | `--insecure` | `NIOS_INSECURE` | no | Disable TLS verification (`true`/`false` in `.env`). |
+| `--verbose-output` | `NIOS_VERBOSE_OUTPUT` | no | Include the verbose-only CSV columns and write both the original and renamed header rows. |
 | `--env-file` | — | no | Path to the `.env` file (default: `.env` in the current directory). |
 | `-v, --verbose` | — | no | Enable DEBUG logging. |
 
@@ -106,7 +107,7 @@ Lab grid with a self-signed certificate:
 (On Windows, run with `py nios_grid_capacity.py ...`.)
 
 ## Outputs
-The script writes a CSV file at a timestamped path derived from `--output` so each run produces a unique file name, for example `grid_capacity.csv` becomes `grid_capacity_20260716_153000_123456.csv`. The file still contains **one row per Grid member**. Columns, in order:
+The script writes a CSV file at a timestamped path derived from `--output` so each run produces a unique file name, for example `grid_capacity.csv` becomes `grid_capacity_20260716_153000_123456.csv`. The file still contains **one row per Grid member**. The CSV includes two header rows: the first row uses the script's original column names, and the second row uses the renamed headers from the included header mapping. Verbose-only columns are omitted unless `--verbose-output` (or `NIOS_VERBOSE_OUTPUT=true`) is supplied. Columns, in order:
 
 1. **Member info** — `host_name`, `member_ref`, management-port settings, DNS
    resolvers/search domains, syslog server count/addresses, additional IP count,
@@ -115,13 +116,20 @@ The script writes a CSV file at a timestamped path derived from `--output` so ea
    `paid_nios`, and a summarized `service_status`.
 2. **Capacity summary** — `cap_report_found`, `cap_name`, `cap_role`,
    `cap_hardware_type`, `cap_max_capacity`, `cap_total_objects`,
-   `cap_percent_used`.
+   `cap_percent_used`, `cap_uddi_ddi_objects`, `cap_uddi_active_ip_objects`,
+   and `cap_uddi_total_objects` (derived estimates based on the reported
+   capacity object counts).
 3. **Per-object-type counts** — one `obj_<type_name>` column for every object
    type reported by *any* member (the union across all members, sorted). If a
    member does not report a given type, that cell is blank.
 
 If a member has no capacity report, its row is still written with the capacity
 columns left blank and `cap_report_found` set to `False`.
+
+Note: the `cap_uddi_ddi_objects`, `cap_uddi_active_ip_objects`, and
+`cap_uddi_total_objects` columns are derived estimates based on the WAPI
+capacity object types returned by the Grid Manager and are intended to help
+approximate how many DDI and Active IP objects each member would consume.
 
 ## Troubleshooting
 - **HTTP 401 / authentication failed** — check `--username` and the password.
