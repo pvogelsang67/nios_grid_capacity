@@ -6,17 +6,17 @@
 # WAPI (REST) API and write the results to a single CSV file (one row per
 # member). The script performs two kinds of WAPI calls:
 #
-# 1. GET /wapi/<ver>/member -> discover every Grid member (host_name
-# plus selected member info).
-# 2. GET /wapi/<ver>/capacityreport -> per-member capacity numbers
-# (max_capacity, total_objects,
-# percent_used, per-object-type counts).
+#   1. GET /wapi/<ver>/member          -> discover every Grid member (host_name
+#                                          plus selected member info).
+#   2. GET /wapi/<ver>/capacityreport  -> per-member capacity numbers
+#                                          (max_capacity, total_objects,
+#                                          percent_used, per-object-type counts).
 #
 # Inputs can be supplied on the command line OR in a .env file. Precedence is:
-# command line > .env file > (for the password only) secure prompt.
+#   command line  >  .env file  >  (for the password only) secure prompt.
 #
 # Author: Pat Vogelsang
-# Year: 2026
+# Year:   2026
 #
 # -----------------------------------------------------------------------------
 # MIT License
@@ -48,22 +48,22 @@ WHAT THIS SCRIPT DOES
 Given the IP address or FQDN of a NIOS Grid Manager and a set of API
 credentials, this script:
 
- * Calls the WAPI ``member`` object to enumerate every Grid member and gather
- useful member information (host name, node hardware type/model, HA status,
- hypervisor/platform, management port and DNS resolver settings, etc.).
- * Calls the WAPI ``capacityreport`` object once per member to retrieve that
- member's capacity numbers (hardware type, maximum object capacity, total
- objects in use, percent used, role) plus the per-object-type counts.
- * Writes everything to a single CSV file with exactly one row per member.
+  * Calls the WAPI ``member`` object to enumerate every Grid member and gather
+    useful member information (host name, node hardware type/model, HA status,
+    hypervisor/platform, management port and DNS resolver settings, etc.).
+  * Calls the WAPI ``capacityreport`` object once per member to retrieve that
+    member's capacity numbers (hardware type, maximum object capacity, total
+    objects in use, percent used, role) plus the per-object-type counts.
+  * Writes everything to a single CSV file with exactly one row per member.
 
 WHERE INPUTS COME FROM
 ----------------------
 Every input may be provided on the command line OR in a ``.env`` file. The
 resolution order (highest priority first) is:
 
- 1. Command-line argument (e.g. ``--grid-manager 192.168.1.1``).
- 2. Matching key in the ``.env`` file (e.g. ``NIOS_GRID_MANAGER=192.168.1.1``).
- 3. For the PASSWORD only: a secure, no-echo interactive prompt.
+  1. Command-line argument (e.g. ``--grid-manager 192.168.1.1``).
+  2. Matching key in the ``.env`` file (e.g. ``NIOS_GRID_MANAGER=192.168.1.1``).
+  3. For the PASSWORD only: a secure, no-echo interactive prompt.
 
 The ``.env`` keys are: NIOS_GRID_MANAGER, NIOS_USERNAME, NIOS_PASSWORD,
 NIOS_OUTPUT, NIOS_WAPI_VERSION, NIOS_PAGE_SIZE, NIOS_TIMEOUT, NIOS_CA_CERT,
@@ -71,37 +71,35 @@ NIOS_INSECURE.
 
 OUTPUTS
 -------
- * By default, a compact CSV file at the resolved output path containing only
-   the most important member and capacity columns.
- * When ``--verbose-output`` is supplied, a full CSV file at the resolved
-   output path containing all current columns, including the extended member
-   metadata and every per-object-type ``obj_<type>`` column reported by any
-   member.
+  * A CSV file at the resolved output path. Member-info columns come first, then
+    the capacity summary columns, then one ``obj_<type>`` column for every
+    object type reported by any member (the UNION across all members so nothing
+    is lost). Missing values are left blank.
 
 DEPENDENCIES
 ------------
- * Python 3.8+ and the standard library ONLY. NIOS WAPI is plain HTTPS with
- HTTP Basic authentication, which ``urllib`` handles natively, so no
- third-party HTTP client (such as ``requests``) is required. The ``.env``
- file is parsed with a tiny built-in parser, so ``python-dotenv`` is NOT
- needed either.
+  * Python 3.8+ and the standard library ONLY. NIOS WAPI is plain HTTPS with
+    HTTP Basic authentication, which ``urllib`` handles natively, so no
+    third-party HTTP client (such as ``requests``) is required. The ``.env``
+    file is parsed with a tiny built-in parser, so ``python-dotenv`` is NOT
+    needed either.
 """
 
 # --- Standard library imports (no third-party packages needed) ---
-import argparse  # command-line parsing and auto-generated --help
-import base64  # to build the HTTP Basic auth header manually
-import csv  # to write the results file
-import getpass  # to prompt for the password without echoing it
-import json  # to parse WAPI JSON responses
-import logging  # structured status/diagnostic output (wired to -v)
-import os  # to read environment variables and check permissions
-import ssl  # to build the TLS context (NIOS often uses self-signed certs)
-import sys  # for clean, non-zero exits on error
-import urllib.error  # to catch HTTP/URL errors cleanly
-import urllib.parse  # to safely build query strings
-import urllib.request  # to perform the HTTPS GET requests
+import argparse            # command-line parsing and auto-generated --help
+import base64              # to build the HTTP Basic auth header manually
+import csv                 # to write the results file
+import getpass             # to prompt for the password without echoing it
+import json                # to parse WAPI JSON responses
+import logging             # structured status/diagnostic output (wired to -v)
+import os                  # to read environment variables and check permissions
+import ssl                 # to build the TLS context (NIOS often uses self-signed certs)
+import sys                 # for clean, non-zero exits on error
+import urllib.error        # to catch HTTP/URL errors cleanly
+import urllib.parse        # to safely build query strings
+import urllib.request      # to perform the HTTPS GET requests
 from datetime import datetime
-from pathlib import Path  # for robust, cross-platform path handling
+from pathlib import Path   # for robust, cross-platform path handling
 
 
 # A module-level logger. Verbosity (INFO vs DEBUG) is configured in main()
@@ -134,49 +132,6 @@ DEFAULTS = {
     "verbose_output": False,
 }
 
-# The default CSV output is intentionally compact. These are the exact columns
-# requested for the non-verbose export. Verbose mode keeps the script's full
-# current output, which includes all member-info columns, all capacity summary
-# columns, and every discovered obj_<type> count column.
-DEFAULT_OUTPUT_COLUMNS = [
-    "host_name",
-    "node1_ha_status",
-    "node1_host_platform",
-    "node1_hwid",
-    "node1_hwmodel",
-    "node1_hwtype",
-    "node1_hypervisor",
-    "cap_role",
-    "cap_hardware_type",
-    "cap_max_capacity",
-    "cap_total_objects",
-    "cap_percent_used",
-    "cap_uddi_ddi_objects",
-    "cap_uddi_active_ip_objects",
-    "cap_uddi_total_objects",
-]
-
-# The compact export should use cleaner presentation headers rather than the
-# internal cap_* names. Verbose mode preserves the original field names so a
-# human (or downstream script) can still see every native column clearly.
-DEFAULT_OUTPUT_HEADER_MAP = {
-    "host_name": "host_name",
-    "node1_ha_status": "node1_ha_status",
-    "node1_host_platform": "node1_host_platform",
-    "node1_hwid": "node1_hwid",
-    "node1_hwmodel": "node1_hwmodel",
-    "node1_hwtype": "node1_hwtype",
-    "node1_hypervisor": "node1_hypervisor",
-    "cap_role": "role",
-    "cap_hardware_type": "hardware_type",
-    "cap_max_capacity": "max_capacity",
-    "cap_total_objects": "total_objects",
-    "cap_percent_used": "percent_used",
-    "cap_uddi_ddi_objects": "uddi_ddi_objects",
-    "cap_uddi_active_ip_objects": "uddi_active_ip_objects",
-    "cap_uddi_total_objects": "uddi_total_objects",
-}
-
 
 # =============================================================================
 # --- Argument parsing ---
@@ -185,13 +140,13 @@ def parse_args(argv=None):
     """Define and parse command-line arguments.
 
     Note:
-    Required inputs (grid manager, username, output) are intentionally NOT
-    marked ``required`` here, because they may instead be supplied through
-    the ``.env`` file. Their presence is validated later in
-    ``resolve_config`` once the command line and ``.env`` have been merged.
-    Optional settings default to ``None`` so we can tell "user did not set
-    this" apart from "user chose the default value", which is what makes the
-    command-line-over-.env precedence work correctly.
+        Required inputs (grid manager, username, output) are intentionally NOT
+        marked ``required`` here, because they may instead be supplied through
+        the ``.env`` file. Their presence is validated later in
+        ``resolve_config`` once the command line and ``.env`` have been merged.
+        Optional settings default to ``None`` so we can tell "user did not set
+        this" apart from "user chose the default value", which is what makes the
+        command-line-over-.env precedence work correctly.
 
     Args:
         argv (list[str] | None): argument vector (defaults to sys.argv).
@@ -209,22 +164,19 @@ def parse_args(argv=None):
         epilog=(
             "Input precedence: command line > .env file > (password) secure prompt.\n\n"
             ".env file keys (KEY=value, one per line):\n"
-            " NIOS_GRID_MANAGER, NIOS_USERNAME, NIOS_PASSWORD, NIOS_OUTPUT,\n"
-            " NIOS_WAPI_VERSION, NIOS_PAGE_SIZE, NIOS_TIMEOUT, NIOS_CA_CERT,\n"
-            " NIOS_INSECURE, NIOS_VERBOSE_OUTPUT\n\n"
+            "  NIOS_GRID_MANAGER, NIOS_USERNAME, NIOS_PASSWORD, NIOS_OUTPUT,\n"
+            "  NIOS_WAPI_VERSION, NIOS_PAGE_SIZE, NIOS_TIMEOUT, NIOS_CA_CERT,\n"
+            "  NIOS_INSECURE, NIOS_VERBOSE_OUTPUT\n\n"
             "Examples:\n"
-            " # Default compact export, prompt for the password:\n"
-            " ./nios_grid_capacity.py --grid-manager 192.168.1.1 \\\n"
-            " --username admin --output grid_capacity.csv\n\n"
-            " # Full verbose export with all columns:\n"
-            " ./nios_grid_capacity.py --grid-manager 192.168.1.1 \\\n"
-            " --username admin --output grid_capacity.csv --verbose-output\n\n"
-            " # All inputs (incl. password) in a .env file in the current dir:\n"
-            " ./nios_grid_capacity.py # reads ./.env automatically\n\n"
-            " # .env for host/user, but override the output on the command line:\n"
-            " ./nios_grid_capacity.py --env-file prod.env --output prod_cap.csv\n\n"
-            " # Lab grid with a self-signed certificate (skip TLS verification):\n"
-            " ./nios_grid_capacity.py -g 192.168.1.1 -u admin -o out.csv --insecure\n"
+            "  # All inputs on the command line, prompt for the password:\n"
+            "  ./nios_grid_capacity.py --grid-manager 192.168.1.1 \\\n"
+            "      --username admin --output grid_capacity.csv\n\n"
+            "  # All inputs (incl. password) in a .env file in the current dir:\n"
+            "  ./nios_grid_capacity.py            # reads ./.env automatically\n\n"
+            "  # .env for host/user, but override the output on the command line:\n"
+            "  ./nios_grid_capacity.py --env-file prod.env --output prod_cap.csv\n\n"
+            "  # Lab grid with a self-signed certificate (skip TLS verification):\n"
+            "  ./nios_grid_capacity.py -g 192.168.1.1 -u admin -o out.csv --insecure\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -310,7 +262,7 @@ def parse_args(argv=None):
     # store_true defaults to False; we cannot tell "not passed" from "passed",
     # so we treat CLI True as an override and otherwise fall back to .env.
     parser.add_argument(
-        "-i", "--insecure",
+        "-i","--insecure",
         action="store_true",
         help=(
             "Disable TLS certificate verification (handy for lab grids with "
@@ -327,10 +279,8 @@ def parse_args(argv=None):
         "--verbose-output",
         action="store_true",
         help=(
-            "Write the full CSV output with all current columns, including "
-            "extended member metadata and every per-object-type count column. "
-            "Without this flag, the script writes the smaller fixed summary "
-            "column set. (.env: NIOS_VERBOSE_OUTPUT=true)"
+            "Include the verbose-only CSV columns in the output and write both "
+            "the original and renamed header rows. (.env: NIOS_VERBOSE_OUTPUT=true)"
         ),
     )
 
@@ -344,11 +294,11 @@ def load_env_file(env_path, explicitly_requested):
     """Parse a simple ``.env`` file into a dictionary.
 
     The parser is intentionally minimal and dependency-free. It supports:
-    * ``KEY=value`` lines.
-    * Blank lines and ``#`` comment lines (ignored).
-    * An optional leading ``export `` (as commonly seen in shell env files).
-    * Values optionally wrapped in single or double quotes (quotes stripped).
-    * Inline ``#`` comments on UNQUOTED values (everything after ``#`` dropped).
+      * ``KEY=value`` lines.
+      * Blank lines and ``#`` comment lines (ignored).
+      * An optional leading ``export `` (as commonly seen in shell env files).
+      * Values optionally wrapped in single or double quotes (quotes stripped).
+      * Inline ``#`` comments on UNQUOTED values (everything after ``#`` dropped).
 
     Args:
         env_path (str): path to the .env file.
@@ -358,8 +308,8 @@ def load_env_file(env_path, explicitly_requested):
 
     Returns:
         dict: mapping of NIOS_* keys found in the file to their string values.
-            Only recognized keys (see ENV_KEYS) are returned; unknown keys are
-            ignored with a debug log so typos are visible under -v.
+              Only recognized keys (see ENV_KEYS) are returned; unknown keys are
+              ignored with a debug log so typos are visible under -v.
 
     Raises:
         SystemExit: if an explicitly requested env file does not exist, or if a
@@ -513,7 +463,7 @@ def resolve_config(args, env):
     if missing:
         sys.exit(
             "Error: the following required input(s) were not provided on the "
-            "command line or in the .env file:\n - " + "\n - ".join(missing)
+            "command line or in the .env file:\n  - " + "\n  - ".join(missing)
         )
 
     # --- Validate value ranges / files, exactly as before ---
@@ -546,10 +496,10 @@ def resolve_password(args, env):
     """Determine the WAPI password following the required precedence.
 
     Order (highest priority first):
-    1. ``--password`` command-line argument.
-    2. ``NIOS_PASSWORD`` from the .env file.
-    3. ``NIOS_PASSWORD`` from the actual process environment (convenience).
-    4. Secure interactive prompt via ``getpass`` (no echo / obscured).
+        1. ``--password`` command-line argument.
+        2. ``NIOS_PASSWORD`` from the .env file.
+        3. ``NIOS_PASSWORD`` from the actual process environment (convenience).
+        4. Secure interactive prompt via ``getpass`` (no echo / obscured).
 
     Args:
         args (argparse.Namespace): parsed arguments (uses ``args.password``).
@@ -689,8 +639,8 @@ def fetch_all_members(base_url, auth_header, ssl_context, timeout, page_size):
     """Enumerate every Grid member, following WAPI paging as needed.
 
     Uses the exact member query supplied in the API examples:
-    member?_return_fields=host_name,dns_resolver_setting,syslog_servers,
-    additional_ip_list,mgmt_port_setting,node_info
+        member?_return_fields=host_name,dns_resolver_setting,syslog_servers,
+                additional_ip_list,mgmt_port_setting,node_info
 
     Paging is enabled via ``_paging=1`` + ``_return_as_object=1`` so large grids
     are fully enumerated rather than silently truncated.
@@ -747,8 +697,8 @@ def fetch_member_capacity(base_url, member_name, auth_header, ssl_context, timeo
     """Retrieve the capacity report for a single member by name.
 
     Uses the exact capacity query supplied in the API examples:
-    capacityreport?name=<member_name>&_return_fields=object_counts,
-    total_objects,hardware_type,max_capacity,name,role,percent_used
+        capacityreport?name=<member_name>&_return_fields=object_counts,
+                total_objects,hardware_type,max_capacity,name,role,percent_used
 
     Args:
         base_url (str): WAPI base URL.
@@ -812,9 +762,7 @@ def flatten_member_info(member):
     syslog_servers = member.get("syslog_servers") or []
     row["syslog_server_count"] = len(syslog_servers)
     row["syslog_server_addresses"] = ";".join(
-        str(server.get("address", ""))
-        for server in syslog_servers
-        if isinstance(server, dict)
+        str(s.get("address", "")) for s in syslog_servers if isinstance(s, dict)
     )
 
     # Additional IPs configured on the member.
@@ -836,9 +784,8 @@ def flatten_member_info(member):
         # Summarize each node's service_status list into "service=status" pairs.
         services = node.get("service_status") or []
         row[f"{prefix}service_status"] = ";".join(
-            f"{service.get('service', '')}={service.get('status', '')}"
-            for service in services
-            if isinstance(service, dict)
+            f"{s.get('service', '')}={s.get('status', '')}"
+            for s in services if isinstance(s, dict)
         )
 
     return row
@@ -850,12 +797,6 @@ def estimate_uddi_objects(object_counts):
     The estimate is based on an explicit mapping of capacity object types to one
     of two buckets: DDI Object or Active IP. The function returns three values:
     the DDI-object total, the Active IP total, and the combined UDDI total.
-
-    Args:
-        object_counts (list[dict]): raw WAPI object-count records.
-
-    Returns:
-        tuple[int, int, int]: ddi total, active-IP total, combined total.
     """
     ddi_types = {
         "A Record/Substitute (A Record) Rule/Substitute (IPv4 Address) Rule",
@@ -966,19 +907,10 @@ def flatten_capacity(capacity):
 # --- CSV writing ---
 # =============================================================================
 def normalize_header_name(column):
-    """Strip internal prefixes from a column name for human-friendly output.
-
-    Args:
-        column (str): internal column name.
-
-    Returns:
-        str: header name with known internal prefixes removed.
-    """
     for prefix in ("cap_", "obj_"):
         if column.startswith(prefix):
             return column[len(prefix):]
     return column
-
 
 def build_unique_output_path(output_path, verbose_output=False):
     """Return a unique output path by adding a timestamped suffix.
@@ -986,13 +918,6 @@ def build_unique_output_path(output_path, verbose_output=False):
     The base file name is preserved, a timestamp is inserted before the
     extension, and an incrementing counter is appended if the file already
     exists to guarantee uniqueness.
-
-    Args:
-        output_path (str): user-requested base output path.
-        verbose_output (bool): whether this is the verbose export.
-
-    Returns:
-        Path: unique path safe to write.
     """
     path = Path(output_path)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -1016,57 +941,68 @@ def build_unique_output_path(output_path, verbose_output=False):
     return candidate
 
 
-def select_output_columns(all_columns, verbose_output):
-    """Choose which columns and headers should be written to the CSV.
+def load_header_layout(layout_path=None):
+    """Load the original/new header mapping and verbose flags from newheadings.csv."""
+    path = Path(layout_path or Path(__file__).with_name("newheadings.csv"))
+    if not path.is_file():
+        return {}
 
-    Why this exists:
-        The script used to depend on an external ``newheadings.csv`` file to
-        decide which columns were normal vs verbose. That file is no longer
-        available, so the selection logic must be fully self-contained.
+    try:
+        with open(path, "r", newline="", encoding="utf-8") as handle:
+            rows = list(csv.reader(handle))
+    except OSError as err:
+        LOG.debug("Could not read header layout file %s: %s", path, err)
+        return {}
 
-    Args:
-        all_columns (list[str]): every possible column collected for the run.
-        verbose_output (bool): True for the full export, False for compact mode.
+    if len(rows) < 3:
+        return {}
 
-    Returns:
-        tuple[list[str], list[str]]: selected internal column names and the
-            headers to write for those columns.
-    """
-    if verbose_output:
-        # Verbose mode intentionally preserves the full current output. We also
-        # keep the existing behavior of presenting cap_/obj_ columns with their
-        # prefixes removed, because that matches the script's long-standing CSV
-        # presentation style.
-        selected_columns = list(all_columns)
-        selected_headers = [normalize_header_name(column) for column in selected_columns]
-        return selected_columns, selected_headers
+    original_names = [cell.strip() for cell in rows[0][1:]]
+    verbose_flags = [cell.strip() for cell in rows[1][1:]]
+    renamed_names = [cell.strip() for cell in rows[2][1:]]
 
-    # Default mode is intentionally smaller and predictable. We use the exact
-    # fixed column list requested, but only keep columns that actually exist in
-    # this run so the writer never raises on a missing key.
-    selected_columns = [column for column in DEFAULT_OUTPUT_COLUMNS if column in all_columns]
-    selected_headers = [DEFAULT_OUTPUT_HEADER_MAP[column] for column in selected_columns]
+    layout = {}
+    for original_name, verbose_flag, new_name in zip(original_names, verbose_flags, renamed_names):
+        if not original_name:
+            continue
+        layout[original_name] = {
+            "new_name": new_name or original_name,
+            "verbose": verbose_flag == "VERBOSE",
+        }
+    return layout
+
+
+def select_output_columns(columns, verbose_output, layout_path=None):
+    """Return the columns and their display headers for the CSV export."""
+    layout = load_header_layout(layout_path)
+    selected_columns = []
+    selected_headers = []
+
+    for column in columns:
+        definition = layout.get(column)
+        if definition and definition["verbose"] and not verbose_output:
+            continue
+        selected_columns.append(column)
+        if definition:
+            selected_headers.append(definition["new_name"])
+        else:
+            selected_headers.append(normalize_header_name(column))
+
     return selected_columns, selected_headers
 
-
 def write_csv(output_path, rows, member_info_keys, summary_keys, object_count_keys, verbose_output=False):
-    """Write the collected rows to a CSV file.
+    """Write the collected rows to a CSV file with original/new header rows.
 
-    In compact mode, the script writes only the fixed summary columns requested
-    for the standard export. In verbose mode, the script writes the full set of
-    current columns.
-
-    Args:
-        output_path (str | Path): destination CSV path.
-        rows (list[dict]): one flattened row per member.
-        member_info_keys (list[str]): discovered member-info column order.
-        summary_keys (list[str]): fixed capacity-summary column order.
-        object_count_keys (set[str]): every discovered obj_<type> column.
-        verbose_output (bool): whether to write the full export.
+    The output includes two header rows: the first row uses the script's original
+    field names, and the second row uses the new display names from
+    newheadings.csv. Verbose-only columns are omitted unless the user requested
+    verbose output.
     """
     ordered_object_keys = sorted(object_count_keys)
     fieldnames = list(member_info_keys) + list(summary_keys) + ordered_object_keys
-    selected_columns, selected_headers = select_output_columns(fieldnames, verbose_output)
+    selected_columns, selected_headers = select_output_columns(
+        fieldnames, verbose_output
+    )
 
     # newline="" is required by the csv module to avoid blank lines on Windows.
     with open(output_path, "w", newline="", encoding="utf-8") as handle:
@@ -1093,7 +1029,7 @@ def main():
 
     # Load the .env file (if any). A custom --env-file that is missing is an
     # error; a missing default ./.env is silently ignored.
-    explicitly_requested = args.env_file != ".env"
+    explicitly_requested = (args.env_file != ".env")
     env = load_env_file(args.env_file, explicitly_requested)
 
     # Merge command line + .env + defaults, then validate everything.
@@ -1141,9 +1077,9 @@ def main():
 
     # --- Step 2: for each member, fetch its capacity report and flatten it ---
     rows = []
-    object_count_keys = set()  # union of every obj_<type> column seen
-    member_info_key_order = None  # preserve first member's info-column order
-    missing_capacity = []  # members with no capacity report
+    object_count_keys = set()          # union of every obj_<type> column seen
+    member_info_key_order = None       # preserve first member's info-column order
+    missing_capacity = []              # members with no capacity report
 
     for member in members:
         info = flatten_member_info(member)
@@ -1199,10 +1135,7 @@ def main():
     ]
 
     # --- Step 3: write everything out to CSV ---
-    output_path = build_unique_output_path(
-        config["output"],
-        verbose_output=config["verbose_output"],
-    )
+    output_path = build_unique_output_path(config["output"], verbose_output=config["verbose_output"])
     config["output"] = str(output_path)
 
     try:
