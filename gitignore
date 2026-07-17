@@ -26,3 +26,7 @@ Thumbs.db
 
 # Test environments
 tests/
+
+# VSCode config
+.vscode/
+.vscode

@@ -61,8 +61,8 @@ WHERE INPUTS COME FROM
 Every input may be provided on the command line OR in a ``.env`` file. The
 resolution order (highest priority first) is:
 
-  1. Command-line argument (e.g. ``--grid-manager 192.168.2.20``).
-  2. Matching key in the ``.env`` file (e.g. ``NIOS_GRID_MANAGER=192.168.2.20``).
+  1. Command-line argument (e.g. ``--grid-manager 192.168.1.1``).
+  2. Matching key in the ``.env`` file (e.g. ``NIOS_GRID_MANAGER=192.168.1.1``).
   3. For the PASSWORD only: a secure, no-echo interactive prompt.
 
 The ``.env`` keys are: NIOS_GRID_MANAGER, NIOS_USERNAME, NIOS_PASSWORD,
@@ -169,14 +169,14 @@ def parse_args(argv=None):
             "  NIOS_INSECURE, NIOS_VERBOSE_OUTPUT\n\n"
             "Examples:\n"
             "  # All inputs on the command line, prompt for the password:\n"
-            "  ./nios_grid_capacity.py --grid-manager 192.168.2.20 \\\n"
+            "  ./nios_grid_capacity.py --grid-manager 192.168.1.1 \\\n"
             "      --username admin --output grid_capacity.csv\n\n"
             "  # All inputs (incl. password) in a .env file in the current dir:\n"
             "  ./nios_grid_capacity.py            # reads ./.env automatically\n\n"
             "  # .env for host/user, but override the output on the command line:\n"
             "  ./nios_grid_capacity.py --env-file prod.env --output prod_cap.csv\n\n"
             "  # Lab grid with a self-signed certificate (skip TLS verification):\n"
-            "  ./nios_grid_capacity.py -g 192.168.2.20 -u admin -o out.csv --insecure\n"
+            "  ./nios_grid_capacity.py -g 192.168.1.1 -u admin -o out.csv --insecure\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -262,7 +262,7 @@ def parse_args(argv=None):
     # store_true defaults to False; we cannot tell "not passed" from "passed",
     # so we treat CLI True as an override and otherwise fall back to .env.
     parser.add_argument(
-        "--insecure",
+        "-i","--insecure",
         action="store_true",
         help=(
             "Disable TLS certificate verification (handy for lab grids with "
@@ -906,7 +906,13 @@ def flatten_capacity(capacity):
 # =============================================================================
 # --- CSV writing ---
 # =============================================================================
-def build_unique_output_path(output_path):
+def normalize_header_name(column):
+    for prefix in ("cap_", "obj_"):
+        if column.startswith(prefix):
+            return column[len(prefix):]
+    return column
+
+def build_unique_output_path(output_path, verbose_output=False):
     """Return a unique output path by adding a timestamped suffix.
 
     The base file name is preserved, a timestamp is inserted before the
@@ -922,6 +928,9 @@ def build_unique_output_path(output_path):
     else:
         stem = path.name
         suffix = ""
+
+    if verbose_output:
+        stem = f"{stem}_verbose"
 
     candidate = path.with_name(f"{stem}_{timestamp}{suffix}")
     counter = 1
@@ -974,10 +983,12 @@ def select_output_columns(columns, verbose_output, layout_path=None):
         if definition and definition["verbose"] and not verbose_output:
             continue
         selected_columns.append(column)
-        selected_headers.append(definition["new_name"] if definition else column)
+        if definition:
+            selected_headers.append(definition["new_name"])
+        else:
+            selected_headers.append(normalize_header_name(column))
 
     return selected_columns, selected_headers
-
 
 def write_csv(output_path, rows, member_info_keys, summary_keys, object_count_keys, verbose_output=False):
     """Write the collected rows to a CSV file with original/new header rows.
@@ -1124,7 +1135,7 @@ def main():
     ]
 
     # --- Step 3: write everything out to CSV ---
-    output_path = build_unique_output_path(config["output"])
+    output_path = build_unique_output_path(config["output"], verbose_output=config["verbose_output"])
     config["output"] = str(output_path)
 
     try:
